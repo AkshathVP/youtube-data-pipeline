@@ -1,51 +1,91 @@
 import json
 import os
+import tempfile
+import logging
+import urllib.parse
 import boto3
 import pandas as pd
 
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
 s3_client = boto3.client('s3')
 
-def lambda_handler(event, context):
-    silver_bucket = os.environ.get('SILVER_BUCKET')
-    
-    # 1. Parse bucket and key from S3 Event Trigger or run manually for historical files
-    if 'Records' in event:
-        source_bucket = event['Records'][0]['s3']['bucket']['name']
-        source_key = event['Records'][0]['s3']['object']['key']
-    else:
-        # Fallback default for manual test invocations
-        source_bucket = f"{silver_bucket.replace('-silver-', '-bronze-')}"
-        source_key = "youtube/reference_data/US_category_id.json"
+def extract_region_from_key(key):
+    """Safely extract region code from filename (e.g. youtube/reference_data/US_category_id.json -> us)"""
+    filename = os.path.basename(key)
+    if '_' in filename:
+        return filename.split('_')[0].lower()
+    return 'us'
 
-    print(f"Processing JSON from s3://{source_bucket}/{source_key}")
+def process_single_s3_record(bucket, key):
+    """Processes a single JSON reference file and writes Parquet to S3 Silver layer."""
+    region = extract_region_from_key(key)
+    logger.info(f"Processing reference JSON for region: '{region}' from s3://{bucket}/{key}")
 
-    # 2. Fetch raw JSON file from Bronze S3
-    response = s3_client.get_object(Bucket=source_bucket, Key=source_key)
+    response = s3_client.get_object(Bucket=bucket, Key=key)
     content = json.loads(response['Body'].read().decode('utf-8'))
 
-    # 3. Normalize nested JSON structure
     categories = []
     for item in content.get('items', []):
-        categories.append({
-            'category_id': int(item['id']),
-            'category_title': item['snippet']['title'],
-            'assignable': item['snippet']['assignable'],
-            'channel_id': item['snippet']['channelId']
-        })
+        try:
+            snippet = item.get('snippet', {})
+            categories.append({
+                'category_id': int(item['id']),
+                'category_title': str(snippet.get('title', 'Unknown')),
+                'assignable': bool(snippet.get('assignable', False)),
+                'channel_id': str(snippet.get('channelId', '')),
+                'region': region
+            })
+        except (KeyError, ValueError) as e:
+            logger.warning(f"Skipping malformed category item in {key}: {e}")
+            continue
+
+    if not categories:
+        logger.warning(f"No valid category records found in {key}")
+        return None
 
     df = pd.DataFrame(categories)
 
-    # 4. Write converted Parquet directly to Silver S3
-    region_code = os.path.basename(source_key).split('_')[0].lower()
-    output_key = f"youtube/clean_reference_data/region={region_code}/category_data.parquet"
-    
-    local_path = "/tmp/temp_data.parquet"
-    df.to_parquet(local_path, index=False)
-    
-    s3_client.upload_file(local_path, silver_bucket, output_key)
-    print(f"Successfully uploaded cleaned Parquet to s3://{silver_bucket}/{output_key}")
+    target_bucket = os.environ.get('SILVER_BUCKET', 'yt-pipeline-akshath-silver-dev')
+    target_key = f"youtube/clean_reference_data/region={region}/category_data.parquet"
+
+    with tempfile.NamedTemporaryFile(suffix='.parquet', delete=False) as tmp_file:
+        temp_parquet_path = tmp_file.name
+
+    try:
+        df.to_parquet(temp_parquet_path, engine='pyarrow', index=False, compression='snappy')
+        s3_client.upload_file(temp_parquet_path, target_bucket, target_key)
+        logger.info(f"Successfully uploaded clean Parquet to s3://{target_bucket}/{target_key}")
+    finally:
+        if os.path.exists(temp_parquet_path):
+            os.remove(temp_parquet_path)
+
+    return target_key
+
+def lambda_handler(event, context):
+    """AWS Lambda entry point handling both S3 event triggers and direct Step Functions calls."""
+    logger.info(f"Received event: {json.dumps(event)}")
+    processed_keys = []
+
+    if 'Records' in event:
+        for record in event['Records']:
+            bucket = record['s3']['bucket']['name']
+            key = urllib.parse.unquote_plus(record['s3']['object']['key'])
+            result = process_single_s3_record(bucket, key)
+            if result:
+                processed_keys.append(result)
+    else:
+        bucket = event.get('bucket', os.environ.get('BRONZE_BUCKET', 'yt-pipeline-akshath-bronze-dev'))
+        key = event.get('key', 'youtube/reference_data/US_category_id.json')
+        result = process_single_s3_record(bucket, key)
+        if result:
+            processed_keys.append(result)
 
     return {
         'statusCode': 200,
-        'body': json.dumps({'output_key': output_key, 'rows_processed': len(df)})
+        'body': json.dumps({
+            'message': 'JSON reference data successfully transformed to Parquet',
+            'processed_files': processed_keys
+        })
     }
