@@ -7,7 +7,6 @@ A serverless, automated end-to-end data pipeline built on AWS that ingests, tran
 ## 🏗️ Architecture
 
 The pipeline follows the **Medallion Data Lake Pattern** (Bronze → Silver → Gold):
-text
 [ Raw Data (CSV / JSON) ]
 │
 ▼
