@@ -1,0 +1,15 @@
+{
+  "Rules": [
+    {
+      "ID": "ArchiveBronzeToGlacier",
+      "Status": "Enabled",
+      "Filter": { "Prefix": "youtube/" },
+      "Transitions": [
+        {
+          "Days": 90,
+          "StorageClass": "GLACIER"
+        }
+      ]
+    }
+  ]
+}

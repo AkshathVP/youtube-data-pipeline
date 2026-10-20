@@ -1,0 +1,21 @@
+# Temporary CLI response and payload files
+response.json
+lambda_payload.json
+gold_query.sql
+glue-command.json
+glue-args.json
+silver-db.json
+silver-ref-table.json
+silver-stats-table.json
+gold-db.json
+
+# Deployment archives
+*.zip
+
+# Python cache files
+__pycache__/
+*.pyc
+
+# Environment or local configuration
+.env
+.DS_Store
