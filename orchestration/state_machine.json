@@ -1,0 +1,38 @@
+{
+  "Comment": "YouTube Data Pipeline End-to-End Medallion Orchestration",
+  "StartAt": "Clean Reference JSON (Lambda)",
+  "States": {
+    "Clean Reference JSON (Lambda)": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "yt-pipeline-json-to-parquet"
+      },
+      "Next": "Process Silver Statistics (Athena)"
+    },
+    "Process Silver Statistics (Athena)": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+      "Parameters": {
+        "QueryString": "CREATE TABLE IF NOT EXISTS yt_pipeline_silver_db.clean_raw_statistics WITH (format = 'PARQUET', external_location = 's3://yt-pipeline-akshath-silver-dev/youtube/clean_raw_statistics/', partitioned_by = ARRAY['region']) AS SELECT video_id, trending_date, title, channel_title, category_id, publish_time, tags, TRY(CAST(views AS bigint)) AS views, TRY(CAST(likes AS bigint)) AS likes, TRY(CAST(dislikes AS bigint)) AS dislikes, TRY(CAST(comment_count AS bigint)) AS comment_count, thumbnail_link, comments_disabled, ratings_disabled, video_error_or_removed, description, TRY(date_parse(trending_date, '%y.%d.%m')) AS trending_date_clean, region FROM yt_pipeline_bronze_db.raw_statistics WHERE video_id IS NOT NULL AND video_id != 'video_id';",
+        "WorkGroup": "primary",
+        "ResultConfiguration": {
+          "OutputLocation": "s3://yt-pipeline-akshath-scripts-dev/athena-results/"
+        }
+      },
+      "Next": "Build Gold Category Analytics (Athena)"
+    },
+    "Build Gold Category Analytics (Athena)": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+      "Parameters": {
+        "QueryString": "CREATE TABLE IF NOT EXISTS yt_pipeline_gold_db.trending_category_analytics_v2 WITH (format = 'PARQUET', external_location = 's3://yt-pipeline-akshath-gold-dev/youtube/trending_category_analytics_v2/') AS SELECT s.region, COALESCE(r.category_title, 'Unknown') AS category_title, COUNT(DISTINCT s.video_id) AS total_trending_videos, SUM(s.views) AS total_views, SUM(s.likes) AS total_likes, SUM(s.comment_count) AS total_comments, ROUND(AVG(s.views), 0) AS avg_views_per_video, ROUND((SUM(s.likes + s.comment_count) * 100.0) / NULLIF(SUM(s.views), 0), 2) AS engagement_rate_pct FROM yt_pipeline_silver_db.clean_raw_statistics s LEFT JOIN yt_pipeline_silver_db.clean_reference_data r ON s.category_id = r.category_id AND s.region = r.region GROUP BY s.region, COALESCE(r.category_title, 'Unknown');",
+        "WorkGroup": "primary",
+        "ResultConfiguration": {
+          "OutputLocation": "s3://yt-pipeline-akshath-scripts-dev/athena-results/"
+        }
+      },
+      "End": true
+    }
+  }
+}
