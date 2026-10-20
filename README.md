@@ -8,19 +8,27 @@ An automated, serverless data pipeline built on AWS that ingests, cleans, catalo
 
 The pipeline implements the **Medallion Data Lake Pattern** (Bronze → Silver → Gold):
 
-```mermaid
-flowchart TD
-    A["Raw Ingestion Data\n(CSV / JSON)"] --> B["Bronze S3 Bucket\n(Raw Data Staging)"]
-    
-    B --> C["AWS Lambda\n(JSON Parsing & Parquet)"]
-    B --> D["Amazon Athena CTAS\n(Data Cleaning & Type Casting)"]
-    
-    C --> E["Silver S3 Bucket\n(Clean Partitioned Parquet)"]
-    D --> E
-    
-    E --> F["Amazon Athena CTAS\n(SQL Aggregations & Joins)"]
-    
-    F --> G["Gold S3 Bucket\n(Analytics-Ready Business Data)"]
+```text
+[ Raw Data (CSV / JSON) ]
+|
+▼
+┌──────────────────────────────┐
+│  Bronze S3   | <-- Raw Data Staging
+└──────────────────────────────┘
+|
+├── AWS Lambda (Python / AWSSDKPandas) --> JSON flattening & Parquet conversion
+├── AWS Athena CTAS Queries           --> Data cleaning, Type casting, MSCK REPAIR
+▼
+┌──────────────────────────────┐
+│  Silver S3   | <-- Cleaned Partitioned Parquet Data
+└──────────────────────────────┘
+|
+├── Athena CTAS / SQL Aggregations   --> Cross-table JOINs & Metrics
+▼
+┌──────────────────────────────┐
+│  Gold S3     | <-- Analytics-Ready Business Data
+└──────────────────────────────┘
+```
 ## ⚡ Automation & Orchestration
 
 The workflow is orchestrated sequentially using **AWS Step Functions** (`yt-pipeline-orchestrator`):
